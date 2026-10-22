@@ -16,8 +16,9 @@ body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:var(--bg);color:v
 .store-logo.visible{display:block}
 .kiosk-title{font-size:clamp(28px,6vw,48px);font-weight:800;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.3)}
 .camera-wrapper{position:relative;width:100%;max-width:500px;aspect-ratio:4/3;border-radius:16px;overflow:hidden;background:#000;box-shadow:0 8px 32px rgba(0,0,0,.4)}
-#cameraPreview{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-.scan-overlay{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
+/* Quagga2 creates its own video element inside the target container */
+.camera-wrapper video{width:100%!important;height:100%!important;object-fit:cover!important}
+.scan-overlay{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2}
 .scan-frame{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:70%;height:40%;border:3px solid rgba(255,255,255,.6);border-radius:12px}
 .scan-frame::before{content:'';position:absolute;top:-3px;left:10%;width:80%;height:3px;background:var(--accent);animation:scanLine 2s ease-in-out infinite;border-radius:2px}
 @keyframes scanLine{0%,100%{top:-3px}50%{top:calc(100% - 3px)}}
@@ -99,7 +100,7 @@ body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:var(--bg);color:v
 <h1 class="kiosk-title">معرفة السعر</h1>
 </div>
 <div class="camera-wrapper" id="cameraWrapper">
-<video id="cameraPreview" autoplay playsinline muted></video>
+<!-- Quagga2 will inject video here automatically -->
 <div class="scan-overlay">
 <div class="scan-frame"></div>
 <div class="scan-corners">
@@ -109,7 +110,7 @@ body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:var(--bg);color:v
 </div>
 <div id="cameraError" class="error-state" style="display:none">
 <h3>⚠️ خطأ في الكاميرا</h3>
-<p>يرجى السماح بالوصول إلى الكاميرا من إعدادات الجهاز</p>
+<p id="cameraErrorMsg">يرجى السماح بالوصول إلى الكاميرا من إعدادات الجهاز</p>
 </div>
 </div>
 <p class="instruction">وجّه باركود المنتج نحو الكاميرا</p>
@@ -161,10 +162,10 @@ body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:var(--bg);color:v
 </div>
 <div class="admin-body">
 <div class="admin-tabs">
-<button class="admin-tab active" onclick="App.switchTab('products')">المنتجات</button>
-<button class="admin-tab" onclick="App.switchTab('import')">استيراد / تصدير</button>
-<button class="admin-tab" onclick="App.switchTab('settings')">الإعدادات</button>
-<button class="admin-tab" onclick="App.switchTab('info')">معلومات</button>
+<button class="admin-tab active" onclick="App.switchTab(event,'products')">المنتجات</button>
+<button class="admin-tab" onclick="App.switchTab(event,'import')">استيراد / تصدير</button>
+<button class="admin-tab" onclick="App.switchTab(event,'settings')">الإعدادات</button>
+<button class="admin-tab" onclick="App.switchTab(event,'info')">معلومات</button>
 </div>
 
 <div id="tab-products" class="tab-content active">
@@ -228,7 +229,7 @@ body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:var(--bg);color:v
 <div class="setup-card">
 <h2>ℹ️ معلومات التطبيق</h2>
 <p style="font-size:14px;color:var(--muted);line-height:2">
-الإصدار: 1.0.0<br>
+الإصدار: 1.0.1<br>
 النوع: كشك فحص الأسعار بدون إنترنت<br>
 قاعدة البيانات: IndexedDB محلي<br>
 الماسح الضوئي: مكتبة Quagga2 مدمجة
@@ -270,11 +271,15 @@ body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:var(--bg);color:v
 
 <div class="toast" id="toast"></div>
 
+<!-- 
+  OFFLINE NOTE: For true offline operation, download quagga.min.js locally 
+  and change this src to "./lib/quagga.min.js". The CDN is used here for 
+  development convenience only.
+-->
 <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js"></script>
 <script>
 const App = {
   db: null,
-  cameraStream: null,
   lastScannedCode: '',
   lastScanTime: 0,
   resultTimeout: null,
@@ -285,7 +290,7 @@ const App = {
   adminTapCount: 0,
   adminTapTimer: null,
   displayDuration: 5,
-  quaggaAvailable: typeof Quagga !== 'undefined',
+  scannerInitialized: false,
 
   async init() {
     const setupDone = localStorage.getItem('kiosk_setup_done');
@@ -298,7 +303,10 @@ const App = {
     await this.loadLogo();
     this.showScreen('kioskScreen');
     this.setupAdminTrigger();
-    this.startCamera();
+    // Wait for DOM to be fully ready before starting camera
+    requestAnimationFrame(() => {
+      setTimeout(() => this.startScanner(), 100);
+    });
     this.seedTestData();
   },
 
@@ -324,9 +332,9 @@ const App = {
 
   saveSetup() {
     const pin = document.getElementById('setupPin').value;
-    const confirm = document.getElementById('setupPinConfirm').value;
+    const confirmVal = document.getElementById('setupPinConfirm').value;
     if (!/^\d{4}$/.test(pin)) { this.showToast('أدخل رمز مكون من 4 أرقام'); return; }
-    if (pin !== confirm) { this.showToast('الرمزان غير متطابقين'); return; }
+    if (pin !== confirmVal) { this.showToast('الرمزان غير متطابقين'); return; }
     const hash = btoa(pin.split('').reverse().join('') + pin);
     localStorage.setItem('kiosk_admin_hash', hash);
     localStorage.setItem('kiosk_setup_done', 'true');
@@ -407,6 +415,10 @@ const App = {
   cancelAuth() {
     this.pinBuffer = '';
     this.showScreen('kioskScreen');
+    // Restart scanner when returning to kiosk
+    if (!this.isScanning) {
+      setTimeout(() => this.startScanner(), 200);
+    }
   },
 
   enterAdmin() {
@@ -418,108 +430,172 @@ const App = {
 
   exitAdmin() {
     this.showScreen('kioskScreen');
-    this.startCamera();
+    // Small delay to ensure screen transition completes before camera access
+    setTimeout(() => this.startScanner(), 300);
   },
 
-  switchTab(tabName) {
+  switchTab(evt, tabName) {
     document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-    event.target.classList.add('active');
+    if (evt && evt.currentTarget) {
+      evt.currentTarget.classList.add('active');
+    }
     document.getElementById('tab-' + tabName).classList.add('active');
     if (tabName === 'info') this.updateStats();
   },
 
-  async startCamera() {
-    const video = document.getElementById('cameraPreview');
+  /**
+   * CAMERA FIX: Single unified camera pipeline using Quagga2 only.
+   * No separate getUserMedia call — Quagga manages the stream internally.
+   */
+  startScanner() {
     const errorEl = document.getElementById('cameraError');
-    try {
-      if (this.cameraStream) {
-        this.cameraStream.getTracks().forEach(t => t.stop());
-      }
-      this.cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-      });
-      video.srcObject = this.cameraStream;
-      video.style.display = 'block';
-      errorEl.style.display = 'none';
-      video.onloadedmetadata = () => {
-        video.play();
-        this.initScanner();
-      };
-    } catch (err) {
-      console.warn('Camera error:', err);
-      video.style.display = 'none';
-      errorEl.style.display = 'block';
-      this.initScannerWithImage();
-    }
-  },
+    const errorMsg = document.getElementById('cameraErrorMsg');
+    errorEl.style.display = 'none';
 
-  initScanner() {
-    if (!this.quaggaAvailable) {
-      console.warn('Quagga2 not loaded. Barcode scanning unavailable.');
+    // Check secure context first
+    if (!window.isSecureContext) {
+      errorMsg.textContent = 'يتطلب الوصول إلى الكاميرا اتصالاً آمناً (HTTPS). يرجى فتح التطبيق عبر HTTPS أو localhost.';
+      errorEl.style.display = 'block';
+      console.warn('[Kiosk] Not a secure context. Camera unavailable.');
       return;
     }
+
+    // Check mediaDevices support
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      errorMsg.textContent = 'المتصفح لا يدعم الوصول إلى الكاميرا. يرجى استخدام متصفح حديث.';
+      errorEl.style.display = 'block';
+      console.warn('[Kiosk] mediaDevices API not available.');
+      return;
+    }
+
+    // Check Quagga availability
+    if (typeof Quagga === 'undefined') {
+      errorMsg.textContent = 'فشل تحميل مكتبة الماسح الضوئي. تأكد من الاتصال بالشبكة عند أول تشغيل.';
+      errorEl.style.display = 'block';
+      console.warn('[Kiosk] Quagga2 library not loaded.');
+      return;
+    }
+
+    // Prevent duplicate initialization
+    if (this.isScanning) {
+      console.log('[Kiosk] Scanner already running.');
+      return;
+    }
+
+    // Clean up any previous state
+    const wrapper = document.getElementById('cameraWrapper');
+    // Remove any previously injected video/canvas elements from Quagga
+    const oldVideos = wrapper.querySelectorAll('video');
+    const oldCanvases = wrapper.querySelectorAll('canvas');
+    oldVideos.forEach(v => v.remove());
+    oldCanvases.forEach(c => c.remove());
+
     try {
       Quagga.init({
         inputStream: {
           type: 'LiveStream',
-          target: document.getElementById('cameraWrapper'),
-          constraints: { facingMode: 'environment' }
+          target: wrapper,
+          constraints: {
+            facingMode: 'environment',
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
         },
         decoder: {
-          readers: ['ean_reader', 'ean_8_reader', 'upc_reader', 'upc_e_reader', 'code_128_reader', 'code_39_reader', 'i2of5_reader']
+          readers: [
+            'ean_reader',
+            'ean_8_reader',
+            'upc_reader',
+            'upc_e_reader',
+            'code_128_reader',
+            'code_39_reader',
+            'i2of5_reader'
+          ],
+          multiple: false
         },
         locate: true,
-        frequency: 10
+        frequency: 8,
+        numOfWorkers: navigator.hardwareConcurrency ? Math.min(navigator.hardwareConcurrency, 4) : 2
       }, (err) => {
-        if (err) { console.warn('Quagga init error:', err); return; }
-        const videoEl = document.querySelector('#cameraWrapper video');
-        const previewEl = document.getElementById('cameraPreview');
-        if (videoEl && videoEl !== previewEl) {
-          previewEl.style.display = 'none';
+        if (err) {
+          console.error('[Kiosk] Quagga init failed:', err);
+          if (err.name === 'NotAllowedError' || err.message?.includes('Permission')) {
+            errorMsg.textContent = 'تم رفض إذن الكاميرا. يرجى السماح بالوصول من إعدادات الجهاز ثم إعادة تحميل الصفحة.';
+          } else if (err.name === 'NotFoundError' || err.message?.includes('No camera')) {
+            errorMsg.textContent = 'لم يتم العثور على كاميرا خلفية. تأكد من توصيل الكاميرا بشكل صحيح.';
+          } else if (err.name === 'NotReadableError' || err.message?.includes('in use')) {
+            errorMsg.textContent = 'الكاميرا مستخدمة من تطبيق آخر. أغلق التطبيقات الأخرى وحاول مرة أخرى.';
+          } else {
+            errorMsg.textContent = 'حدث خطأ أثناء تشغيل الكاميرا: ' + (err.message || err);
+          }
+          errorEl.style.display = 'block';
+          this.isScanning = false;
+          return;
         }
-        Quagga.start();
+
         this.isScanning = true;
+        this.scannerInitialized = true;
+        console.log('[Kiosk] Scanner started successfully.');
+
+        // Register detection handler (remove any old handlers first)
+        Quagga.offDetected();
         Quagga.onDetected((result) => this.handleDetection(result));
       });
     } catch (e) {
-      console.warn('Scanner init failed:', e);
+      console.error('[Kiosk] Scanner exception:', e);
+      errorMsg.textContent = 'خطأ غير متوقع: ' + e.message;
+      errorEl.style.display = 'block';
+      this.isScanning = false;
     }
-  },
-
-  initScannerWithImage() {
-    // Fallback: no scanner without camera
   },
 
   stopScanner() {
-    if (this.quaggaAvailable && this.isScanning) {
-      try { Quagga.stop(); Quagga.offDetected(); } catch(e) {}
-      this.isScanning = false;
+    if (!this.isScanning) return;
+    try {
+      Quagga.offDetected();
+      Quagga.stop();
+      console.log('[Kiosk] Scanner stopped.');
+    } catch (e) {
+      console.warn('[Kiosk] Error stopping scanner:', e);
     }
-    if (this.cameraStream) {
-      this.cameraStream.getTracks().forEach(t => t.stop());
-      this.cameraStream = null;
-    }
+    this.isScanning = false;
+    this.scannerInitialized = false;
   },
 
-  async handleDetection(result) {
+  handleDetection(result) {
+    if (!result || !result.codeResult) return;
     const code = result.codeResult.code;
-    if (!code) return;
+    if (!code || typeof code !== 'string') return;
+
     const now = Date.now();
+    // Debounce: same code within 3 seconds is ignored
     if (code === this.lastScannedCode && (now - this.lastScanTime) < 3000) return;
+
     this.lastScannedCode = code;
     this.lastScanTime = now;
-    const product = await this.lookupProduct(code);
-    this.showResult(product, code);
+
+    console.log('[Kiosk] Detected barcode:', code, '| Format:', result.codeResult.format);
+
+    this.lookupProduct(code).then(product => {
+      this.showResult(product, code);
+    }).catch(err => {
+      console.error('[Kiosk] Lookup error:', err);
+    });
   },
 
   async lookupProduct(barcode) {
+    if (!this.db) return null;
     return new Promise((resolve) => {
-      const tx = this.db.transaction('products', 'readonly');
-      const store = tx.objectStore('products');
-      const req = store.get(barcode);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => resolve(null);
+      try {
+        const tx = this.db.transaction('products', 'readonly');
+        const store = tx.objectStore('products');
+        const req = store.get(barcode);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      } catch (e) {
+        resolve(null);
+      }
     });
   },
 
@@ -545,11 +621,13 @@ const App = {
 
     this.resultTimeout = setTimeout(() => {
       panel.classList.remove('visible');
+      // Allow same barcode to be scanned again after timeout
       this.lastScannedCode = '';
     }, this.displayDuration * 1000);
   },
 
   async seedTestData() {
+    if (!this.db) return;
     const existing = await this.lookupProduct('5901234123457');
     if (!existing) {
       await this.addProductToDB({
@@ -561,6 +639,7 @@ const App = {
         sku: 'TEST-001',
         updatedAt: Date.now()
       });
+      console.log('[Kiosk] Test product seeded: 5901234123457');
     }
   },
 
@@ -583,11 +662,16 @@ const App = {
   },
 
   async getAllProducts() {
+    if (!this.db) return [];
     return new Promise((resolve) => {
-      const tx = this.db.transaction('products', 'readonly');
-      const req = tx.objectStore('products').getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => resolve([]);
+      try {
+        const tx = this.db.transaction('products', 'readonly');
+        const req = tx.objectStore('products').getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => resolve([]);
+      } catch (e) {
+        resolve([]);
+      }
     });
   },
 
@@ -725,7 +809,8 @@ const App = {
 
       const barcode = (cols[barcodeIdx] || '').trim();
       const name = (cols[nameIdx] || '').trim();
-      const price = parseFloat((cols[priceIdx] || '').trim());
+      const priceStr = (cols[priceIdx] || '').trim();
+      const price = parseFloat(priceStr);
 
       if (!barcode || !name || isNaN(price) || price < 0) {
         errors.push(`سطر ${i + 1}: بيانات غير صالحة`);
@@ -905,6 +990,23 @@ const App = {
   }
 };
 
+// Handle visibility changes to prevent duplicate streams
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    // Only restart if we're on the kiosk screen and scanner isn't running
+    const kioskActive = document.getElementById('kioskScreen').classList.contains('active');
+    if (kioskActive && !App.isScanning) {
+      setTimeout(() => App.startScanner(), 300);
+    }
+    requestWakeLock();
+  }
+});
+
+// Clean up on page unload
+window.addEventListener('beforeunload', () => {
+  App.stopScanner();
+});
+
 document.addEventListener('DOMContentLoaded', () => App.init());
 
 // Keep screen awake
@@ -916,9 +1018,6 @@ async function requestWakeLock() {
     }
   } catch (e) {}
 }
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') requestWakeLock();
-});
 requestWakeLock();
 </script>
 </body>
